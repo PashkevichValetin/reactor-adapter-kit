@@ -10,4 +10,6 @@ public interface StockService {
     Mono<StockData> currentPrice(String symbol);
 
     Flux<String> getAvailableSymbols();
+
+    Flux<StockData> watchlist(String... symbol);
 }

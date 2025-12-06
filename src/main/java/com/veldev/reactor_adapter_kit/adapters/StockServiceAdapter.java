@@ -109,6 +109,7 @@ public class StockServiceAdapter implements StockService {
                 .doOnSubscribe(sub -> log.info("Fetching available symbols"));
     }
 
+    @Override
     public Flux<StockData> watchlist(String... symbols) {
         // Валидация входных параметров
         if (symbols == null || symbols.length == 0) {
@@ -140,4 +141,5 @@ public class StockServiceAdapter implements StockService {
                 .doOnSubscribe(sub -> log.info("Watching {} symbols", symbols.length))
                 .doOnError(error -> log.error("Watchlist error: {}", error.getMessage()));
     }
+
 }
