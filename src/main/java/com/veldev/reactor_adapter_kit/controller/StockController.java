@@ -10,14 +10,13 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.awt.*;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/stock")
+@RequestMapping("/api/stocks")
 @RequiredArgsConstructor
 public class StockController {
     private final StockService stockService;
@@ -25,22 +24,20 @@ public class StockController {
     // Получить поток обновлений по акции в реальном времени (SSE)
     @GetMapping(value = "/stream/{symbol}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<StockData>> streamStock(@PathVariable String symbol) {
-        log.info("Requesting stock for symbol: {}", symbol);
+        log.info("Requesting stock stream for symbol: {}", symbol);
 
         return stockService.streamStock(symbol)
                 .map(stockData -> ServerSentEvent.<StockData>builder()
                         .data(stockData)
                         .event("stock-update")
+                        .id(String.valueOf(System.currentTimeMillis()))
                         .build())
+                .doOnSubscribe(sub -> log.info("Started SSE stream for {}", symbol))
                 .doOnError(error -> log.error("Stream error for {}: {}", symbol, error.getMessage()))
-                .onErrorResume(e -> Flux.just(
-                        ServerSentEvent.<StockData>builder()
-                                .event("error")
-                                .data(StockData.builder()
-                                        .symbol(symbol)
-                                        .build())
-                                .build()
-                ));
+                .onErrorResume(e -> {
+                    log.error("Stream failed for {}: {}", symbol, e.getMessage());
+                    return Flux.error(e);
+                });
     }
 
     // Получаем текущую цену акции
@@ -53,6 +50,9 @@ public class StockController {
                     Map<String, Object> response = new HashMap<>();
                     response.put("symbol", stockData.getSymbol());
                     response.put("price", stockData.getPrice());
+                    response.put("change", stockData.getChange());
+                    response.put("changePercent", stockData.getChangePercent());
+                    response.put("volume", stockData.getVolume());
                     response.put("timestamp", stockData.getTimestamp());
                     response.put("success", true);
                     return response;
@@ -70,9 +70,19 @@ public class StockController {
 
     //Получаем список доступных символов
     @GetMapping("/symbols")
-    public Flux<String> getAvailableSymbols() {
+    public Mono<Map<String, Object>> getAvailableSymbols() {
         log.info("Requesting available symbols");
-        return stockService.getAvailableSymbols();
+
+        return stockService.getAvailableSymbols()
+                .collectList()
+                .map(symbols -> {
+                    Map<String, Object> response = new HashMap<>();
+                    response.put("symbols", symbols);
+                    response.put("count", symbols.size());
+                    response.put("timestamp", LocalDateTime.now());
+                    return response;
+                })
+                .doOnSuccess(data -> log.info("Available symbols sent: {} symbols", data.get("count")));
     }
 
     // Следим за несколькими акциями одновременно (SSE)
@@ -84,7 +94,10 @@ public class StockController {
                 .map(stockData -> ServerSentEvent.<StockData>builder()
                         .data(stockData)
                         .event("watchlist-update")
-                        .build());
+                        .id(stockData.getSymbol() + "-" + System.currentTimeMillis())
+                        .build())
+                .doOnSubscribe(sub -> log.info("Started watchlist stream"))
+                .doOnError(error -> log.error("Watchlist stream error: {}", error.getMessage()));
     }
 
     // Проверяем состояние сервиса
@@ -93,7 +106,7 @@ public class StockController {
         log.debug("Health check requested");
 
         return Mono.just(Map.of(
-                "status", "UPP",
+                "status", "UP",
                 "service", "Stock Service API",
                 "timestamp", LocalDateTime.now(),
                 "version", "1.0.0"
@@ -126,15 +139,15 @@ public class StockController {
             if (stock1.get("success").equals(true) && stock2.get("success").equals(true)) {
                 double price1 = (double) stock1.get("price");
                 double price2 = (double) stock2.get("price");
-                comparison.put("priceDifference", price1 - price2);
-                comparison.put("priceDifferencePercent", ((price1 - price2) / price2) * 100);
+                comparison.put("priceDifference", round(price1 - price2, 2));
+                comparison.put("priceDifferencePercent", round(((price1 - price2) / price2) * 100, 2));
                 comparison.put("comparisonSuccessful", true);
             } else {
                 comparison.put("comparisonSuccessful", false);
+                comparison.put("error", "Failed to retrieve data for one or both symbols");
             }
             return comparison;
         });
-
     }
 
     private Map<String, Object> createStockInfo(StockData data) {
@@ -143,6 +156,7 @@ public class StockController {
         info.put("price", data.getPrice());
         info.put("change", data.getChange());
         info.put("changePercent", data.getChangePercent());
+        info.put("volume", data.getVolume());
         info.put("timestamp", data.getTimestamp());
         info.put("success", true);
         return info;
@@ -151,10 +165,14 @@ public class StockController {
     private Map<String, Object> createErrorInfo(String symbol, Throwable error) {
         Map<String, Object> info = new HashMap<>();
         info.put("symbol", symbol);
-        info.put("error", error);
+        info.put("error", error.getMessage());
         info.put("success", false);
         info.put("timestamp", LocalDateTime.now());
         return info;
+    }
 
+    private double round(double value, int places) {
+        double scale = Math.pow(10, places);
+        return Math.round(value * scale) / scale;
     }
 }

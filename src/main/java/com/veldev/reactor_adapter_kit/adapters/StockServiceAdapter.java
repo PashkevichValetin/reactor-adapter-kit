@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.Arrays;
@@ -31,7 +32,8 @@ public class StockServiceAdapter implements StockService {
             return Flux.error(new IllegalArgumentException("Symbol cannot be null or empty"));
         }
 
-        log.info("Starting stock stream for symbol: {}", symbol);
+        String normalizedSymbol = symbol.trim().toUpperCase();
+        log.info("Starting stock stream for symbol: {}", normalizedSymbol);
 
         return Flux.<StockData>create(sink -> {
                     StockCallback callback = new StockCallback() {
@@ -43,62 +45,66 @@ public class StockServiceAdapter implements StockService {
 
                         @Override
                         public void onError(Throwable error) {
-                            log.error("Error in {} stream: {}", symbol, error.getMessage());
+                            log.error("Error in {} stream: {}", normalizedSymbol, error.getMessage());
                             sink.error(error);
                         }
                     };
 
-                    legacyStockService.subscribeToStock(symbol, callback);
-                    log.info("Subscribed to {}", symbol);
+                    legacyStockService.subscribeToStock(normalizedSymbol, callback);
+                    log.info("Subscribed to {}", normalizedSymbol);
 
                     sink.onCancel(() -> {
-                        log.info("Stream cancelled for: {}", symbol);
-                        legacyStockService.unsubscribeFromStock(symbol);
+                        log.info("Stream cancelled for: {}", normalizedSymbol);
+                        legacyStockService.unsubscribeFromStock(normalizedSymbol);
                     });
 
                     sink.onDispose(() -> {
-                        log.info("Stream disposed for: {}", symbol);
-                        legacyStockService.unsubscribeFromStock(symbol);
+                        log.info("Stream disposed for: {}", normalizedSymbol);
+                        legacyStockService.unsubscribeFromStock(normalizedSymbol);
                     });
                 })
-                .doOnSubscribe(sub -> log.info("Client subscribed to {} stream", symbol))
-                .doOnCancel(() -> log.info("{} stream cancelled", symbol))
-                .doOnError(error -> log.error("Error in {} stream: {}", symbol, error.getMessage()));
+                .doOnSubscribe(sub -> log.info("Client subscribed to {} stream", normalizedSymbol))
+                .doOnCancel(() -> log.info("{} stream cancelled", normalizedSymbol))
+                .doOnError(error -> log.error("Error in {} stream: {}", normalizedSymbol, error.getMessage()))
+                .publishOn(Schedulers.boundedElastic());
     }
 
     @Override
     public Mono<StockData> currentPrice(String symbol) {
         // Валидация входных параметров
         if (symbol == null || symbol.trim().isEmpty()) {
+            log.warn("Empty symbol requested");
             return Mono.error(new IllegalArgumentException("Symbol cannot be null or empty"));
         }
 
-        log.info("Fetching current price for: {}", symbol);
+        String normalizedSymbol = symbol.trim().toUpperCase();
+        log.info("Fetching current price for: {}", normalizedSymbol);
 
         return Mono.<StockData>create(sink -> {
                     StockCallback callback = new StockCallback() {
                         @Override
                         public void onUpdate(StockData data) {
-                            log.debug("Current price for {}: ${}", symbol, data.getPrice());
+                            log.debug("Current price for {}: ${}", normalizedSymbol, data.getPrice());
                             sink.success(data);
                         }
 
                         @Override
                         public void onError(Throwable error) {
-                            log.error("Error fetching price for {}: {}", symbol, error.getMessage());
+                            log.error("Error fetching price for {}: {}", normalizedSymbol, error.getMessage());
                             sink.error(error);
                         }
                     };
 
-                    legacyStockService.getCurrentPrice(symbol, callback);
+                    legacyStockService.getCurrentPrice(normalizedSymbol, callback);
                 })
-                .timeout(Duration.ofSeconds(3))
+                .timeout(Duration.ofSeconds(5))
+                .retryWhen(Retry.backoff(2, Duration.ofMillis(100)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .doOnSuccess(data -> {
-                    log.info("Successfully fetched price for {}: ${}", symbol, data.getPrice());
+                    log.info("Successfully fetched price for {}: ${}", normalizedSymbol, data.getPrice());
                 })
                 .doOnError(error -> {
-                    log.error("Failed to get price for {}: {}", symbol, error.getMessage());
+                    log.error("Failed to get price for {}: {}", normalizedSymbol, error.getMessage());
                 });
     }
 
@@ -106,7 +112,8 @@ public class StockServiceAdapter implements StockService {
     public Flux<String> getAvailableSymbols() {
         return Flux.fromIterable(Arrays.asList(legacyStockService.getAvailableSymbols()))
                 .sort()
-                .doOnSubscribe(sub -> log.info("Fetching available symbols"));
+                .doOnSubscribe(sub -> log.info("Fetching available symbols"))
+                .doOnComplete(() -> log.info("Available symbols fetched successfully"));
     }
 
     @Override
@@ -119,27 +126,12 @@ public class StockServiceAdapter implements StockService {
         log.info("Watchlist requested: {}", Arrays.toString(symbols));
 
         return Flux.fromArray(symbols)
-                .flatMap(symbol -> {
-                    if (symbol == null || symbol.trim().isEmpty()) {
-                        log.warn("Empty symbol skipped in watchlist");
-                        return Flux.empty();
-                    }
-                    return streamStock(symbol)
-                            .onErrorResume(e -> {
-                                log.warn("Stream error for {}: {}", symbol, e.getMessage());
-                                // Создаем объект с ошибкой вместо полного игнорирования
-                                return Flux.just(StockData.builder()
-                                        .symbol(symbol)
-                                        .price(0.0)
-                                        .change(0.0)
-                                        .changePercent(0.0)
-                                        .volume(0L)
-                                        .timestamp(java.time.LocalDateTime.now())
-                                        .build());
-                            });
-                })
-                .doOnSubscribe(sub -> log.info("Watching {} symbols", symbols.length))
+                .filter(symbol -> symbol != null && !symbol.trim().isEmpty())
+                .map(String::trim)
+                .map(String::toUpperCase)
+                .distinct()
+                .flatMap(this::streamStock)
+                .doOnSubscribe(sub -> log.info("Watching {} unique symbols", symbols.length))
                 .doOnError(error -> log.error("Watchlist error: {}", error.getMessage()));
     }
-
 }

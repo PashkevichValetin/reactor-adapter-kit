@@ -1,10 +1,13 @@
 package com.veldev.reactor_adapter_kit.services;
 
 import com.veldev.reactor_adapter_kit.model.StockData;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -42,24 +45,26 @@ public class LegacyStockService {
             return;
         }
 
-        if (!isSymbolSupported(symbol)) {
-            log.warn("Symbol {} not supported", symbol);
-            callback.onError(new IllegalArgumentException("Unsupported symbol: " + symbol));
+        String normalizedSymbol = symbol.trim().toUpperCase();
+
+        if (!isSymbolSupported(normalizedSymbol)) {
+            log.warn("Symbol {} not supported", normalizedSymbol);
+            callback.onError(new IllegalArgumentException("Unsupported symbol: " + normalizedSymbol));
             return;
         }
 
-        log.info("Subscribing to stock: {}", symbol);
+        log.info("Subscribing to stock: {}", normalizedSymbol);
 
         // Проверка существующей подписки
-        StockCallback existing = subscriptions.putIfAbsent(symbol, callback);
+        StockCallback existing = subscriptions.putIfAbsent(normalizedSymbol, callback);
         if (existing != null) {
-            log.warn("Symbol {} already subscribed", symbol);
-            callback.onError(new IllegalStateException("Already subscribed to: " + symbol));
+            log.warn("Symbol {} already subscribed", normalizedSymbol);
+            callback.onError(new IllegalStateException("Already subscribed to: " + normalizedSymbol));
             return;
         }
 
         scheduler.schedule(() -> {
-            StockData initialData = generateStockData(symbol);
+            StockData initialData = generateStockData(normalizedSymbol);
             callback.onUpdate(initialData);
         }, 100, TimeUnit.MILLISECONDS);
     }
@@ -70,10 +75,11 @@ public class LegacyStockService {
             return;
         }
 
-        log.info("Unsubscribing from stock: {}", symbol);
-        StockCallback removed = subscriptions.remove(symbol);
+        String normalizedSymbol = symbol.trim().toUpperCase();
+        log.info("Unsubscribing from stock: {}", normalizedSymbol);
+        StockCallback removed = subscriptions.remove(normalizedSymbol);
         if (removed == null) {
-            log.debug("No active subscription found for: {}", symbol);
+            log.debug("No active subscription found for: {}", normalizedSymbol);
         }
     }
 
@@ -84,13 +90,14 @@ public class LegacyStockService {
             return;
         }
 
-        log.info("Fetching current price for: {}", symbol);
+        String normalizedSymbol = symbol.trim().toUpperCase();
+        log.info("Fetching current price for: {}", normalizedSymbol);
 
         scheduler.schedule(() -> {
             if (random.nextDouble() < 0.1) {
-                callback.onError(new RuntimeException("Market data temporarily unavailable"));
+                callback.onError(new RuntimeException("Market data temporarily unavailable for " + normalizedSymbol));
             } else {
-                StockData data = generateStockData(symbol);
+                StockData data = generateStockData(normalizedSymbol);
                 callback.onUpdate(data);
             }
         }, 300 + random.nextInt(700), TimeUnit.MILLISECONDS);
@@ -101,8 +108,9 @@ public class LegacyStockService {
             return false;
         }
 
+        String normalizedSymbol = symbol.trim().toUpperCase();
         for (String s : availableSymbols) {
-            if (s.equalsIgnoreCase(symbol)) {
+            if (s.equals(normalizedSymbol)) {
                 return true;
             }
         }
@@ -137,22 +145,26 @@ public class LegacyStockService {
 
     private void startMarketSimulator() {
         scheduler.scheduleAtFixedRate(() -> {
-            for (String symbol : subscriptions.keySet()) {
-                StockCallback callback = subscriptions.get(symbol);
-                if (callback != null && random.nextDouble() > 0.3) {
-                    StockData data = generateStockData(symbol);
+            Iterator<Map.Entry<String, StockCallback>> iterator = subscriptions.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, StockCallback> entry = iterator.next();
+                String symbol = entry.getKey();
+                StockCallback callback = entry.getValue();
+
+                if (random.nextDouble() > 0.3) {
                     try {
+                        StockData data = generateStockData(symbol);
                         callback.onUpdate(data);
                     } catch (Exception e) {
                         log.error("Error sending update for {}: {}", symbol, e.getMessage());
-                        // Удаляем проблемную подписку
-                        subscriptions.remove(symbol);
+                        iterator.remove(); // Безопасное удаление из итератора
                     }
                 }
             }
         }, 1, 1, TimeUnit.SECONDS);
     }
 
+    @PreDestroy
     public void cleanup() {
         log.info("Cleaning up LegacyStockService resources");
 
@@ -176,5 +188,9 @@ public class LegacyStockService {
 
     public int getActiveSubscriptionsCount() {
         return subscriptions.size();
+    }
+
+    public boolean hasSubscription(String symbol) {
+        return subscriptions.containsKey(symbol);
     }
 }

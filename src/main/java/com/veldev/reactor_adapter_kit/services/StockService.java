@@ -6,10 +6,7 @@ import reactor.core.publisher.Mono;
 
 public interface StockService {
     Flux<StockData> streamStock(String symbol);
-
     Mono<StockData> currentPrice(String symbol);
-
     Flux<String> getAvailableSymbols();
-
-    Flux<StockData> watchlist(String... symbol);
+    Flux<StockData> watchlist(String... symbols);
 }
