@@ -100,6 +100,14 @@ public class SimpleWeatherController {
                 .doOnNext(log::info)
                 .doOnComplete(() -> log.info("Demo completed")); // Демо завершено
     }
+
+    public static org.slf4j.Logger getLog() {
+        return log;
+    }
+
+    public WeatherService getWeatherService() {
+        return weatherService;
+    }
 }
 
 
