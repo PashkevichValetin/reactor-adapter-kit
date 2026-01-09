@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: reactor-adapter-kit
+
+  webflux:
+    static-path-pattern: /**
+  web:
+    resources:
+      static-locations: classpath:/static/
+
+server:
+  port: 8080
+  compression:
+    enabled: true
+    mime-types: text/event-stream,text/html,text/css,application/javascript
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.veldev.reactor_adapter_kit: INFO
+    org.springframework.web: INFO
+    org.springframework.boot.actuate: INFO
+    reactor.netty: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%15.15t] %-40.40logger{39} : %msg%n"
