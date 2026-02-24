@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Data
@@ -14,21 +15,9 @@ import java.time.LocalDateTime;
 public class StockData {
 
     private String symbol;
-    private Double price;
-    private Double change;
-    private Double changePercent;
+    private BigDecimal price;
+    private BigDecimal change;
+    private BigDecimal changePercent;
     private Long volume;
     private LocalDateTime timestamp;
-
-    public boolean isUp() {
-        return change != null && change > 0;
-    }
-
-    public boolean isDown() {
-        return change != null && change < 0;
-    }
-
-    public boolean isUnchanged() {
-        return change == null || change == 0.0;
-    }
 }

@@ -1,6 +1,7 @@
 package com.veldev.reactor_adapter_kit.services;
 
 import com.veldev.reactor_adapter_kit.model.StockData;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -8,6 +9,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -28,22 +31,18 @@ public class ReactiveStockService implements StockService {
     private final Random random = new Random();
     private final Map<String, Double> basePrices = new ConcurrentHashMap<>();
     
-    // Реактивный sink для отправки обновлений акций
+
     private final Sinks.Many<StockData> stockUpdatesSink = 
             Sinks.many().multicast().onBackpressureBuffer(1000);
     
-    // Публичный поток обновлений акций
+
+    @Getter
     private final Flux<StockData> marketDataStream;
     
     public ReactiveStockService() {
         log.info("Initializing ReactiveStockService...");
-        
-        // Инициализация базовых цен
         initializeBasePrices();
-        
-        // Создаем реактивный поток рыночных данных
         this.marketDataStream = createMarketDataStream();
-        
         log.info("ReactiveStockService initialized with {} symbols", SUPPORTED_SYMBOLS.size());
     }
     
@@ -56,12 +55,9 @@ public class ReactiveStockService implements StockService {
     private Flux<StockData> createMarketDataStream() {
         return Flux.interval(Duration.ofSeconds(1))
                 .flatMap(tick -> generateMarketDataUpdates())
-                .doOnNext(stockData -> {
-                    // Эмитим обновления в sink для подписчиков
-                    stockUpdatesSink.tryEmitNext(stockData);
-                })
+                .doOnNext(stockUpdatesSink::tryEmitNext)
                 .publish()
-                .autoConnect(0) // Начинаем эмитить сразу
+                .autoConnect(0)
                 .doOnSubscribe(sub -> log.info("Market data stream started"))
                 .doOnError(error -> log.error("Market data stream error: {}", error.getMessage()))
                 .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)))
@@ -159,40 +155,31 @@ public class ReactiveStockService implements StockService {
         .doOnError(error -> log.error("Watchlist error: {}", error.getMessage()));
     }
 
-    // Дополнительные реактивные методы
-
-    // Получаем поток всех рыночных данных
-    public Flux<StockData> getMarketDataStream() {
-        return marketDataStream;
-    }
-
-    // Подписываемся на обновления символов фильтрации
    public Flux<StockData> subscribeToSymbols(List<String> symbols) {
         return stockUpdatesSink.asFlux()
                 .filter(stockData -> symbols.contains(stockData.getSymbol()))
                 .doOnSubscribe(sub -> log.info("Subscribed to symbols: {}", symbols))
                 .doOnCancel(() -> log.info("Unsubscribed from symbols: {}", symbols));
     }
-    
-    // Генерируем тестовых данных акции
      
     private StockData generateStockData(String symbol) {
-        double basePrice = basePrices.getOrDefault(symbol, 100.0);
+        BigDecimal basePrice = BigDecimal.valueOf(basePrices.getOrDefault(symbol, 100.0));
+
+        BigDecimal change = BigDecimal.valueOf(random.nextDouble() - 0.5)
+                .multiply(BigDecimal.valueOf(10))
+                .setScale(2, RoundingMode.HALF_EVEN);
+
+        BigDecimal newPrice = basePrice.add(change).max(BigDecimal.valueOf(0.1));
+
+        basePrices.put(symbol, newPrice.doubleValue());
         
-        // Имитация рыночных колебаний
-        double change = (random.nextDouble() - 0.5) * 10;
-        double newPrice = Math.max(0.1, basePrice + change);
-        
-        // Обновляем базовую цену
-        basePrices.put(symbol, newPrice);
-        
-        double changePercent = (change / basePrice) * 100;
+        BigDecimal changePercent = change.divide(basePrice, 3, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100));
         
         return StockData.builder()
                 .symbol(symbol)
-                .price(round(newPrice, 2))
-                .change(round(change, 2))
-                .changePercent(round(changePercent, 3))
+                .price(round(newPrice, 2L))
+                .change(round(change, 2L))
+                .changePercent(round(changePercent, 3L))
                 .volume(1_000_000L + random.nextInt(9_000_000))
                 .timestamp(LocalDateTime.now())
                 .build();
@@ -202,27 +189,11 @@ public class ReactiveStockService implements StockService {
         return SUPPORTED_SYMBOLS.contains(symbol);
     }
     
-    private double round(double value, int places) {
-        double scale = Math.pow(10, places);
-        return Math.round(value * scale) / scale;
-    }
-    
-    // Метод для ручной эмитации обновления акции 
-     
-    public void emitStockUpdate(StockData stockData) {
-        stockUpdatesSink.tryEmitNext(stockData);
-    }
-    
-    // Получаем статистику сервиса
-     
-   public Mono<Map<String, Object>> getServiceStats() {
-    return Mono.fromCallable(() -> {
-        Map<String, Object> stats = new HashMap<>();
-        stats.put("supportedSymbols", SUPPORTED_SYMBOLS.size());
-        stats.put("basePricesInitialized", basePrices.size());
-        stats.put("timestamp", LocalDateTime.now());
-        return stats;
-        });
+    private BigDecimal round(BigDecimal value, Long places) {
+        if (places < 0) throw new IllegalArgumentException("Places cannot be negative");
+        if (value == null) return BigDecimal.ZERO;
+
+        return value.setScale(Math.toIntExact(places), RoundingMode.HALF_UP);
     }
 
 }
